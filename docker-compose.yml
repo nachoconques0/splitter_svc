@@ -1,0 +1,60 @@
+# The single start command is `make up`, which is `docker compose up --build`.
+# Every value below has an inline default, so a clone with no .env present comes
+# up on its own; .env.example documents the overrides.
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${DB_USER:-splitter}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-splitter}
+      POSTGRES_DB: ${DB_NAME:-splitter}
+    ports:
+      # Published only so the `make migrate-*` targets can reach the database from
+      # the host. The default is deliberately not 5432: a developer machine very
+      # often has its own Postgres there, and publishing onto it does not fail
+      # loudly — the port simply resolves to the wrong server.
+      - "${DB_HOST_PORT:-5433}:5432"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      # The API waits for this before it runs migrations, so "healthy" has to mean
+      # "answering queries", not merely "process started".
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-splitter} -d ${DB_NAME:-splitter}"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 5s
+
+  api:
+    build: ./backend
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_USER: ${DB_USER:-splitter}
+      DB_PASSWORD: ${DB_PASSWORD:-splitter}
+      DB_NAME: ${DB_NAME:-splitter}
+      DB_SSLMODE: disable
+      SERVER_ADDRESS: ":8080"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      db:
+        condition: service_healthy
+    # No published port. The page reaches the API through nginx on the same
+    # origin, and leaving it unpublished is what proves there is no second route.
+    expose:
+      - "8080"
+    # No restart policy on purpose. The transient case — Postgres not accepting
+    # connections yet — is already handled inside the service, which retries the
+    # first connection for 30s. Everything that gets past that (a missing
+    # variable, a dirty schema) will never fix itself, and restarting only buries
+    # the reason under repetitions of itself.
+
+  web:
+    build: ./frontend
+    ports:
+      - "${WEB_PORT:-8080}:80"
+    depends_on:
+      - api
+
+volumes:
+  db-data:
